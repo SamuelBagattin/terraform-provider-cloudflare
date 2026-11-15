@@ -325,6 +325,7 @@ import (
 	"github.com/cloudflare/terraform-provider-cloudflare/internal/services/zone_tracing"
 	"github.com/cloudflare/terraform-provider-cloudflare/internal/services/zone_tracing_rules"
 	"github.com/cloudflare/terraform-provider-cloudflare/internal/utils"
+	"github.com/cloudflare/terraform-provider-cloudflare/internal/wranglerauth" // fork patch: wrangler OAuth auth
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -353,6 +354,10 @@ type CloudflareProviderModel struct {
 	APIToken                types.String `tfsdk:"api_token" json:"api_token"`
 	UserAgentOperatorSuffix types.String `tfsdk:"user_agent_operator_suffix" json:"user_agent_operator_suffix"`
 	BaseURL                 types.String `tfsdk:"base_url" json:"base_url"`
+
+	// --- BEGIN fork patch: wrangler OAuth auth (see internal/wranglerauth) ---
+	wranglerauth.ProviderModel
+	// --- END fork patch ---
 }
 
 func (p *CloudflareProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -361,7 +366,7 @@ func (p *CloudflareProvider) Metadata(ctx context.Context, req provider.Metadata
 }
 
 func ProviderSchema(ctx context.Context) schema.Schema {
-	return schema.Schema{
+	s := schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			consts.EmailSchemaKey: schema.StringAttribute{
 				Optional:            true,
@@ -413,6 +418,12 @@ func ProviderSchema(ctx context.Context) schema.Schema {
 			},
 		},
 	}
+
+	// --- BEGIN fork patch: wrangler OAuth auth (see internal/wranglerauth) ---
+	wranglerauth.AddSchemaAttributes(s.Attributes)
+	// --- END fork patch ---
+
+	return s
 }
 
 func (p *CloudflareProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
@@ -481,6 +492,21 @@ func (p *CloudflareProvider) Configure(ctx context.Context, req provider.Configu
 	if pluginVersion != nil {
 		opts = append(opts, option.WithHeader("x-stainless-runtime-version", *pluginVersion))
 	}
+
+	// --- BEGIN fork patch: wrangler OAuth auth (see internal/wranglerauth) ---
+	// The middleware rewrites the credential headers of every request, so it
+	// wins over the options above and over cloudflare.DefaultClientOptions,
+	// which reads CLOUDFLARE_API_TOKEN & co. from the environment by itself.
+	opts = append(opts, wranglerauth.Configure(ctx, data.ProviderModel, wranglerauth.Credentials{
+		APIToken:          data.APIToken,
+		APIKey:            data.APIKey,
+		Email:             data.Email,
+		APIUserServiceKey: data.APIUserServiceKey,
+	}, &resp.Diagnostics)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// --- END fork patch ---
 
 	client := cloudflare.NewClient(
 		opts...,
