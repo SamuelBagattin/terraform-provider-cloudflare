@@ -22,4 +22,52 @@ as DNS records, zone settings, load balancers and much more!
 
 {{ tffile "examples/provider/provider.tf" }}
 
+## Authenticating with wrangler (local use)
+
+On a workstation where you already use
+[wrangler](https://developers.cloudflare.com/workers/wrangler/), the provider
+can reuse the OAuth session of `wrangler login` instead of an API token:
+
+{{ tffile "examples/provider/wrangler.tf" }}
+
+The provider runs `wrangler auth token --json` (wrangler 4.57.0 or later) and
+sends the OAuth token it prints. It never reads wrangler's credential files
+itself: wrangler keeps storing the session (in a file or in the OS keyring)
+and refreshing it.
+
+- **Log in first.** Run `wrangler login` (or `npx wrangler login`). If there is
+  no session, or wrangler cannot refresh it, `terraform plan` stops and tells
+  you to log in again. The provider never starts an interactive login.
+- **Profiles.** `wrangler_profile` selects a profile created with
+  `wrangler auth create <name>`, and needs wrangler 4.159.0 or later. It is
+  passed to wrangler as `CLOUDFLARE_AUTH_PROFILE`. Without it, wrangler uses
+  `CLOUDFLARE_AUTH_PROFILE` from your environment, then the profile bound to
+  Terraform's working directory with `wrangler auth activate`, then the
+  default login.
+- **Scopes.** The token only has wrangler's OAuth scopes (Workers, KV, D1,
+  Pages, Queues, read access to zones and a few more; run
+  `wrangler login --scopes-list` to see them). Resources outside them, such as
+  DNS records, zone settings or Zero Trust, fail with HTTP 403 errors. Manage
+  them with an API token, for example through a second provider alias.
+- **Local use only.** In CI, use an
+  [API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
+  (`api_token` or `CLOUDFLARE_API_TOKEN`).
+- **One credential.** `use_wrangler_auth` cannot be combined with `api_token`,
+  `api_key`, `email` or `api_user_service_key`. The `CLOUDFLARE_API_TOKEN`,
+  `CLOUDFLARE_API_KEY`, `CLOUDFLARE_EMAIL` and `CLOUDFLARE_API_USER_SERVICE_KEY`
+  environment variables are ignored with a warning, and removed from wrangler's
+  environment so that wrangler returns its OAuth token. Origin CA certificates,
+  which need `api_user_service_key`, require a separate provider alias.
+
+The token is kept in memory for 5 minutes (`CLOUDFLARE_WRANGLER_TOKEN_TTL`, a
+duration such as `2m`). When the API answers 401, the provider asks wrangler
+again and replays the request once. Each wrangler run may take up to 30 seconds
+(`CLOUDFLARE_WRANGLER_TIMEOUT`); the first `npx wrangler` run can need longer
+if npx has to download wrangler. Concurrent requests share a single wrangler
+run, and provider processes running at the same time (for example several
+provider aliases) take turns through the lock file
+`terraform-provider-cloudflare/wrangler-auth.lock` in the user cache directory,
+so that two refreshes never use the same refresh token. A wrangler command you
+run yourself at the same moment is not covered by this lock.
+
 {{ .SchemaMarkdown | trimspace }}
